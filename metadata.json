@@ -1,0 +1,6 @@
+{
+  "name": "App de Vendas — O Boticário & Eudora",
+  "description": "Aplicativo completo de gestão de vendas, clientes, catálogo de produtos, controle financeiro detalhado, fiado, estoque e agenda para consultoras O Boticário e Eudora.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
