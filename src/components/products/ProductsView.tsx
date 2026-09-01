@@ -465,13 +465,25 @@ export const ProductsView: React.FC<ProductsViewProps> = ({ onOpenCatalog }) => 
                         src={product.imageUrl}
                         alt={product.name}
                         referrerPolicy="no-referrer"
+                        onError={(e) => {
+                          // Graceful fallback if external link fails
+                          const target = e.target as HTMLImageElement;
+                          target.style.display = 'none';
+                          if (target.parentElement) {
+                            const fallback = target.parentElement.querySelector('.image-fallback');
+                            if (fallback) (fallback as HTMLElement).style.display = 'flex';
+                          }
+                        }}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center bg-linear-to-br from-slate-100 to-slate-200 text-slate-400 font-bold text-sm">
-                        <span>{product.category}</span>
-                      </div>
-                    )}
+                    ) : null}
+                    <div 
+                      className={`image-fallback w-full h-full ${product.imageUrl ? 'hidden' : 'flex'} items-center justify-center bg-linear-to-br ${
+                        isBoticario ? 'from-emerald-900/10 to-emerald-900/20 text-emerald-900' : 'from-rose-900/10 to-rose-900/20 text-rose-950'
+                      } font-bold text-xs p-3 text-center`}
+                    >
+                      <span>{product.name.split(' ')[0]} • {product.category}</span>
+                    </div>
 
                     {/* Brand Badge */}
                     <div className="absolute top-2.5 left-2.5">

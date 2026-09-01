@@ -1,39 +1,53 @@
-import React, { useState } from 'react';
-import { useApp } from '../../context/AppContext';
-import { 
-  Wallet, 
-  Calendar, 
-  BarChart3, 
-  Database, 
-  UserCheck, 
-  Sparkles, 
-  ChevronRight, 
+import React, { useState } from "react";
+import { useApp } from "../../context/AppContext";
+import {
+  Wallet,
+  Calendar,
+  BarChart3,
+  Database,
+  UserCheck,
+  Sparkles,
+  ChevronRight,
   ArrowLeft,
   DollarSign,
   Cake,
   Package,
   ShieldCheck,
   FileSpreadsheet,
-  Clock
-} from 'lucide-react';
-import { FinancialView } from '../financial/FinancialView';
-import { AgendaView } from '../agenda/AgendaView';
-import { ReportsView } from '../reports/ReportsView';
-import { formatCurrency } from '../../utils/formatters';
+  Clock,
+} from "lucide-react";
+import { FinancialView } from "../financial/FinancialView";
+import { AgendaView } from "../agenda/AgendaView";
+import { ReportsView } from "../reports/ReportsView";
+import { SettingsView } from "../reports/SettingsView";
+import { formatCurrency } from "../../utils/formatters";
 
 interface MoreViewProps {
-  initialSubSection?: 'menu' | 'financeiro' | 'agenda' | 'relatorios';
+  initialSubSection?:
+    "menu" | "financeiro" | "agenda" | "relatorios" | "configuracoes";
 }
 
-export const MoreView: React.FC<MoreViewProps> = ({ initialSubSection = 'menu' }) => {
-  const [subSection, setSubSection] = useState<'menu' | 'financeiro' | 'agenda' | 'relatorios'>(initialSubSection);
-  const { metrics, consultantName, consultantPhone, consultantEmail, consultantPhotoUrl, consultantPixKey, currentCycle } = useApp();
+export const MoreView: React.FC<MoreViewProps> = ({
+  initialSubSection = "menu",
+}) => {
+  const [subSection, setSubSection] = useState<
+    "menu" | "financeiro" | "agenda" | "relatorios" | "configuracoes"
+  >(initialSubSection);
+  const {
+    metrics,
+    consultantName,
+    consultantPhone,
+    consultantEmail,
+    consultantPhotoUrl,
+    consultantPixKey,
+    currentCycle,
+  } = useApp();
 
-  if (subSection === 'financeiro') {
+  if (subSection === "financeiro") {
     return (
       <div className="space-y-4">
         <button
-          onClick={() => setSubSection('menu')}
+          onClick={() => setSubSection("menu")}
           className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-700 hover:text-slate-900 bg-white border border-slate-200/80 px-3 py-1.5 rounded-xl shadow-2xs cursor-pointer transition-all"
         >
           <ArrowLeft className="w-4 h-4" />
@@ -44,11 +58,11 @@ export const MoreView: React.FC<MoreViewProps> = ({ initialSubSection = 'menu' }
     );
   }
 
-  if (subSection === 'agenda') {
+  if (subSection === "agenda") {
     return (
       <div className="space-y-4">
         <button
-          onClick={() => setSubSection('menu')}
+          onClick={() => setSubSection("menu")}
           className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-700 hover:text-slate-900 bg-white border border-slate-200/80 px-3 py-1.5 rounded-xl shadow-2xs cursor-pointer transition-all"
         >
           <ArrowLeft className="w-4 h-4" />
@@ -59,11 +73,11 @@ export const MoreView: React.FC<MoreViewProps> = ({ initialSubSection = 'menu' }
     );
   }
 
-  if (subSection === 'relatorios') {
+  if (subSection === "relatorios") {
     return (
       <div className="space-y-4">
         <button
-          onClick={() => setSubSection('menu')}
+          onClick={() => setSubSection("menu")}
           className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-700 hover:text-slate-900 bg-white border border-slate-200/80 px-3 py-1.5 rounded-xl shadow-2xs cursor-pointer transition-all"
         >
           <ArrowLeft className="w-4 h-4" />
@@ -74,16 +88,31 @@ export const MoreView: React.FC<MoreViewProps> = ({ initialSubSection = 'menu' }
     );
   }
 
+  if (subSection === "configuracoes") {
+    return (
+      <div className="space-y-4">
+        <button
+          onClick={() => setSubSection("menu")}
+          className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-700 hover:text-slate-900 bg-white border border-slate-200/80 px-3 py-1.5 rounded-xl shadow-2xs cursor-pointer transition-all"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          <span>Voltar ao Menu</span>
+        </button>
+        <SettingsView />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4 max-w-lg mx-auto pb-16">
       {/* Profile & Info Header */}
       <div className="bg-white p-4.5 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           {consultantPhotoUrl ? (
-            <img 
-              src={consultantPhotoUrl} 
-              alt="Perfil" 
-              className="w-14 h-14 rounded-2xl object-cover shadow-xs shrink-0 border border-slate-200" 
+            <img
+              src={consultantPhotoUrl}
+              alt="Perfil"
+              className="w-14 h-14 rounded-2xl object-cover shadow-xs shrink-0 border border-slate-200"
             />
           ) : (
             <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-950 via-emerald-900 to-[#4A0E2E] text-white flex items-center justify-center text-xl font-bold shadow-xs">
@@ -102,12 +131,14 @@ export const MoreView: React.FC<MoreViewProps> = ({ initialSubSection = 'menu' }
             <div className="text-xs text-slate-500 mt-1 space-y-0.5 font-medium">
               {consultantPhone && <p>📱 {consultantPhone}</p>}
               {consultantEmail && <p>✉️ {consultantEmail}</p>}
-              <p className="font-mono pt-0.5">PIX: {consultantPixKey || 'Não configurado'}</p>
+              <p className="font-mono pt-0.5">
+                PIX: {consultantPixKey || "Não configurado"}
+              </p>
             </div>
           </div>
         </div>
-        <button 
-          onClick={() => setSubSection('relatorios')}
+        <button
+          onClick={() => setSubSection("configuracoes")}
           className="text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 px-4 py-2 rounded-xl transition-colors shrink-0 border border-emerald-200/60"
         >
           Editar Perfil
@@ -118,7 +149,7 @@ export const MoreView: React.FC<MoreViewProps> = ({ initialSubSection = 'menu' }
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden divide-y divide-slate-100">
         {/* 1. Financeiro & Lucro */}
         <button
-          onClick={() => setSubSection('financeiro')}
+          onClick={() => setSubSection("financeiro")}
           className="w-full p-4 flex items-center justify-between text-left hover:bg-slate-50 transition-colors cursor-pointer group"
         >
           <div className="flex items-center gap-3.5">
@@ -144,7 +175,7 @@ export const MoreView: React.FC<MoreViewProps> = ({ initialSubSection = 'menu' }
 
         {/* 2. Agenda & Lembretes */}
         <button
-          onClick={() => setSubSection('agenda')}
+          onClick={() => setSubSection("agenda")}
           className="w-full p-4 flex items-center justify-between text-left hover:bg-slate-50 transition-colors cursor-pointer group"
         >
           <div className="flex items-center gap-3.5">
@@ -168,9 +199,9 @@ export const MoreView: React.FC<MoreViewProps> = ({ initialSubSection = 'menu' }
           <ChevronRight className="w-4 h-4 text-slate-400 group-hover:translate-x-1 transition-transform" />
         </button>
 
-        {/* 3. Relatórios & Exportação */}
+        {/* 3. Relatórios & Análises */}
         <button
-          onClick={() => setSubSection('relatorios')}
+          onClick={() => setSubSection("relatorios")}
           className="w-full p-4 flex items-center justify-between text-left hover:bg-slate-50 transition-colors cursor-pointer group"
         >
           <div className="flex items-center gap-3.5">
@@ -179,10 +210,31 @@ export const MoreView: React.FC<MoreViewProps> = ({ initialSubSection = 'menu' }
             </div>
             <div>
               <div className="font-bold text-sm text-slate-900">
-                Relatórios & Configurações
+                Relatórios & Análises
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
-                Ranking de mais vendidos, clientes VIP e backup
+                Ranking de mais vendidos e clientes VIP
+              </p>
+            </div>
+          </div>
+          <ChevronRight className="w-4 h-4 text-slate-400 group-hover:translate-x-1 transition-transform" />
+        </button>
+
+        {/* 4. Configurações & Backup */}
+        <button
+          onClick={() => setSubSection("configuracoes")}
+          className="w-full p-4 flex items-center justify-between text-left hover:bg-slate-50 transition-colors cursor-pointer group"
+        >
+          <div className="flex items-center gap-3.5">
+            <div className="w-10 h-10 rounded-xl bg-slate-100 text-slate-700 border border-slate-200/60 flex items-center justify-center font-bold shrink-0">
+              <Database className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="font-bold text-sm text-slate-900">
+                Configurações & Perfil
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Dados pessoais, recibos, ciclos e backup
               </p>
             </div>
           </div>
@@ -194,15 +246,21 @@ export const MoreView: React.FC<MoreViewProps> = ({ initialSubSection = 'menu' }
       <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 text-xs space-y-2">
         <div className="flex justify-between items-center font-medium text-slate-600">
           <span>Total Vendido Geral:</span>
-          <span className="font-bold text-slate-900">{formatCurrency(metrics.totalRevenue)}</span>
+          <span className="font-bold text-slate-900">
+            {formatCurrency(metrics.totalRevenue)}
+          </span>
         </div>
         <div className="flex justify-between items-center font-medium text-slate-600">
           <span>Lucro Líquido Acumulado:</span>
-          <span className="font-bold text-emerald-800">+{formatCurrency(metrics.netProfit)}</span>
+          <span className="font-bold text-emerald-800">
+            +{formatCurrency(metrics.netProfit)}
+          </span>
         </div>
         <div className="flex justify-between items-center font-medium text-slate-600">
           <span>Total a Receber (Fiado):</span>
-          <span className="font-bold text-amber-800">{formatCurrency(metrics.totalFiadoPending)}</span>
+          <span className="font-bold text-amber-800">
+            {formatCurrency(metrics.totalFiadoPending)}
+          </span>
         </div>
       </div>
     </div>

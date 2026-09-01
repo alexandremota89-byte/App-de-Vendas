@@ -1,12 +1,11 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { 
   Client, 
   Product, 
   Sale, 
   Expense, 
   CycleConfig, 
-  Installment,
-  Brand
+  Brand 
 } from '../types';
 import { 
   INITIAL_CLIENTS, 
@@ -16,6 +15,14 @@ import {
   INITIAL_CYCLES 
 } from '../data/initialData';
 import { isBirthdayThisMonth, isDateOverdue } from '../utils/formatters';
+import { db } from '../lib/firebase';
+import { useAuth } from './AuthContext';
+import { 
+  doc, 
+  getDoc, 
+  setDoc, 
+  onSnapshot 
+} from 'firebase/firestore';
 
 interface AppContextType {
   // State
@@ -33,6 +40,10 @@ interface AppContextType {
   consultantReceiptNote: string;
   activeBrandFilter: 'todas' | 'boticario' | 'eudora';
   
+  // Cloud sync status
+  isSyncing: boolean;
+  isCloudConnected: boolean;
+
   // Actions
   setActiveBrandFilter: (brand: 'todas' | 'boticario' | 'eudora') => void;
   setConsultantName: (name: string) => void;
@@ -73,6 +84,7 @@ interface AppContextType {
   exportDataJSON: () => string;
   importDataJSON: (jsonString: string) => boolean;
   resetToDefaultData: () => void;
+  syncToCloudNow: () => Promise<void>;
 
   // Computed metrics
   metrics: {
@@ -96,21 +108,26 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 const STORAGE_KEYS = {
-  CLIENTS: 'boticario_eudora_clients_v1',
-  PRODUCTS: 'boticario_eudora_products_v1',
-  SALES: 'boticario_eudora_sales_v1',
-  EXPENSES: 'boticario_eudora_expenses_v1',
-  CYCLES: 'boticario_eudora_cycles_v1',
-  CURRENT_CYCLE: 'boticario_eudora_current_cycle_v1',
-  CONSULTANT_NAME: 'boticario_eudora_consultant_name_v1',
-  CONSULTANT_PHONE: 'boticario_eudora_consultant_phone_v1',
-  CONSULTANT_EMAIL: 'boticario_eudora_consultant_email_v1',
-  CONSULTANT_PHOTO_URL: 'boticario_eudora_consultant_photo_v1',
-  CONSULTANT_PIX: 'boticario_eudora_consultant_pix_v1',
-  CONSULTANT_RECEIPT_NOTE: 'boticario_eudora_receipt_note_v1',
+  CLIENTS: 'boticario_eudora_clients_v2',
+  PRODUCTS: 'boticario_eudora_products_v2',
+  SALES: 'boticario_eudora_sales_v2',
+  EXPENSES: 'boticario_eudora_expenses_v2',
+  CYCLES: 'boticario_eudora_cycles_v2',
+  CURRENT_CYCLE: 'boticario_eudora_current_cycle_v2',
+  CONSULTANT_NAME: 'boticario_eudora_consultant_name_v2',
+  CONSULTANT_PHONE: 'boticario_eudora_consultant_phone_v2',
+  CONSULTANT_EMAIL: 'boticario_eudora_consultant_email_v2',
+  CONSULTANT_PHOTO_URL: 'boticario_eudora_consultant_photo_v2',
+  CONSULTANT_PIX: 'boticario_eudora_consultant_pix_v2',
+  CONSULTANT_RECEIPT_NOTE: 'boticario_eudora_receipt_note_v2',
 };
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user } = useAuth();
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [isCloudConnected, setIsCloudConnected] = useState(false);
+
+  // Local state with LocalStorage caching
   const [clients, setClients] = useState<Client[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.CLIENTS);
@@ -156,10 +173,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   });
 
-  const [currentCycle, setCurrentCycle] = useState<string>(() => {
+  const [currentCycle, setCurrentCycleState] = useState<string>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEYS.CURRENT_CYCLE);
-      return saved || 'Ciclo 03/2026';
+      return localStorage.getItem(STORAGE_KEYS.CURRENT_CYCLE) || 'Ciclo 03/2026';
     } catch {
       return 'Ciclo 03/2026';
     }
@@ -199,9 +215,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [consultantPixKey, setConsultantPixKeyState] = useState<string>(() => {
     try {
-      return localStorage.getItem(STORAGE_KEYS.CONSULTANT_PIX) || 'consultora@pix.com.br';
+      return localStorage.getItem(STORAGE_KEYS.CONSULTANT_PIX) || '';
     } catch {
-      return 'consultora@pix.com.br';
+      return '';
     }
   });
 
@@ -215,7 +231,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [activeBrandFilter, setActiveBrandFilter] = useState<'todas' | 'boticario' | 'eudora'>('todas');
 
-  // Persistence effects
+  // Sync to LocalStorage
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEYS.CLIENTS, JSON.stringify(clients));
@@ -256,66 +272,269 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [cycles]);
 
+  // Firestore Real-Time / Offline-First Synchronization
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.CURRENT_CYCLE, currentCycle);
-    } catch (e) {
-      console.error(e);
+    if (!user) {
+      setIsCloudConnected(false);
+      return;
     }
-  }, [currentCycle]);
+
+    setIsCloudConnected(true);
+    const userDocRef = doc(db, 'users', user.uid, 'appData', 'main');
+
+    // Subscribe to cloud changes
+    const unsubscribe = onSnapshot(userDocRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const cloudData = snapshot.data();
+        
+        // Detect legacy test data (e.g. cli-01 / Mariana Silveira or old mock list) and auto-clean
+        const hasLegacyTestData = cloudData.clients?.some((c: any) => c.id === 'cli-01' || c.name === 'Mariana Silveira') ||
+          cloudData.sales?.some((s: any) => s.id === 'sale-01');
+
+        if (hasLegacyTestData && !cloudData.hasCleanedLegacyData) {
+          const defaultName = user.displayName || (user.email ? user.email.split('@')[0] : 'Consultora');
+          const cleanPayload = {
+            clients: [],
+            products: INITIAL_PRODUCTS,
+            sales: [],
+            expenses: [],
+            cycles: INITIAL_CYCLES,
+            currentCycle: 'Ciclo 03/2026',
+            consultantName: defaultName,
+            consultantPhone: '',
+            consultantEmail: user.email || '',
+            consultantPhotoUrl: user.photoURL || '',
+            consultantPixKey: '',
+            consultantReceiptNote: '💖 Muito obrigada pela sua preferência e carinho!',
+            hasCleanedLegacyData: true,
+            lastUpdatedAt: new Date().toISOString(),
+          };
+          setClients([]);
+          setProducts(INITIAL_PRODUCTS);
+          setSales([]);
+          setExpenses([]);
+          setCycles(INITIAL_CYCLES);
+          setCurrentCycleState('Ciclo 03/2026');
+          setConsultantNameState(defaultName);
+          setConsultantPhoneState('');
+          setConsultantEmailState(user.email || '');
+          setConsultantPhotoUrlState(user.photoURL || '');
+          setConsultantPixKeyState('');
+          setConsultantReceiptNoteState('💖 Muito obrigada pela sua preferência e carinho!');
+          setDoc(userDocRef, cleanPayload, { merge: true }).catch(console.error);
+          return;
+        }
+
+        if (cloudData.clients && Array.isArray(cloudData.clients)) setClients(cloudData.clients);
+        if (cloudData.products && Array.isArray(cloudData.products)) setProducts(cloudData.products);
+        if (cloudData.sales && Array.isArray(cloudData.sales)) setSales(cloudData.sales);
+        if (cloudData.expenses && Array.isArray(cloudData.expenses)) setExpenses(cloudData.expenses);
+        if (cloudData.cycles && Array.isArray(cloudData.cycles)) setCycles(cloudData.cycles);
+        if (cloudData.currentCycle) setCurrentCycleState(cloudData.currentCycle);
+        if (cloudData.consultantName) setConsultantNameState(cloudData.consultantName);
+        if (cloudData.consultantPhone) setConsultantPhoneState(cloudData.consultantPhone);
+        if (cloudData.consultantEmail) setConsultantEmailState(cloudData.consultantEmail);
+        if (cloudData.consultantPhotoUrl) setConsultantPhotoUrlState(cloudData.consultantPhotoUrl);
+        if (cloudData.consultantPixKey) setConsultantPixKeyState(cloudData.consultantPixKey);
+        if (cloudData.consultantReceiptNote) setConsultantReceiptNoteState(cloudData.consultantReceiptNote);
+      } else {
+        // First time cloud user: initialize with clean slate and pre-registered catalogue
+        const defaultName = user.displayName || (user.email ? user.email.split('@')[0] : 'Consultora');
+        const initialCloudPayload = {
+          clients: [],
+          products: INITIAL_PRODUCTS,
+          sales: [],
+          expenses: [],
+          cycles: INITIAL_CYCLES,
+          currentCycle: 'Ciclo 03/2026',
+          consultantName: defaultName,
+          consultantPhone: '',
+          consultantEmail: user.email || '',
+          consultantPhotoUrl: user.photoURL || '',
+          consultantPixKey: '',
+          consultantReceiptNote: '💖 Muito obrigada pela sua preferência e carinho!',
+          hasCleanedLegacyData: true,
+          lastUpdatedAt: new Date().toISOString(),
+        };
+        setClients([]);
+        setProducts(INITIAL_PRODUCTS);
+        setSales([]);
+        setExpenses([]);
+        setCycles(INITIAL_CYCLES);
+        setCurrentCycleState('Ciclo 03/2026');
+        setConsultantNameState(defaultName);
+        setConsultantPhoneState('');
+        setConsultantEmailState(user.email || '');
+        setConsultantPhotoUrlState(user.photoURL || '');
+        setConsultantPixKeyState('');
+        setConsultantReceiptNoteState('💖 Muito obrigada pela sua preferência e carinho!');
+        setDoc(userDocRef, initialCloudPayload, { merge: true }).catch(console.error);
+      }
+    }, (err) => {
+      console.warn('Firestore snapshot error (working offline):', err);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Helper to persist to cloud automatically in background
+  const saveToCloud = useCallback(async (overrides: Record<string, any> = {}) => {
+    if (!user) return;
+    try {
+      setIsSyncing(true);
+      const userDocRef = doc(db, 'users', user.uid, 'appData', 'main');
+      await setDoc(userDocRef, {
+        clients,
+        products,
+        sales,
+        expenses,
+        cycles,
+        currentCycle,
+        consultantName,
+        consultantPhone,
+        consultantEmail,
+        consultantPhotoUrl,
+        consultantPixKey,
+        consultantReceiptNote,
+        lastUpdatedAt: new Date().toISOString(),
+        ...overrides,
+      }, { merge: true });
+    } catch (err) {
+      console.warn('Auto-save to cloud buffered offline:', err);
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [
+    user, 
+    clients, 
+    products, 
+    sales, 
+    expenses, 
+    cycles, 
+    currentCycle, 
+    consultantName, 
+    consultantPhone, 
+    consultantEmail, 
+    consultantPhotoUrl, 
+    consultantPixKey, 
+    consultantReceiptNote
+  ]);
+
+  // Atomic update for consultant profile
+  const updateConsultantProfile = useCallback((profile: {
+    name?: string;
+    phone?: string;
+    email?: string;
+    photoUrl?: string;
+    pixKey?: string;
+    receiptNote?: string;
+  }) => {
+    const payload: Record<string, any> = {};
+
+    if (profile.name !== undefined) {
+      setConsultantNameState(profile.name);
+      try {
+        localStorage.setItem(STORAGE_KEYS.CONSULTANT_NAME, profile.name);
+      } catch (e) {
+        console.error(e);
+      }
+      payload.consultantName = profile.name;
+    }
+
+    if (profile.phone !== undefined) {
+      setConsultantPhoneState(profile.phone);
+      try {
+        localStorage.setItem(STORAGE_KEYS.CONSULTANT_PHONE, profile.phone);
+      } catch (e) {
+        console.error(e);
+      }
+      payload.consultantPhone = profile.phone;
+    }
+
+    if (profile.email !== undefined) {
+      setConsultantEmailState(profile.email);
+      try {
+        localStorage.setItem(STORAGE_KEYS.CONSULTANT_EMAIL, profile.email);
+      } catch (e) {
+        console.error(e);
+      }
+      payload.consultantEmail = profile.email;
+    }
+
+    if (profile.photoUrl !== undefined) {
+      setConsultantPhotoUrlState(profile.photoUrl);
+      try {
+        localStorage.setItem(STORAGE_KEYS.CONSULTANT_PHOTO_URL, profile.photoUrl);
+      } catch (e) {
+        console.error(e);
+      }
+      payload.consultantPhotoUrl = profile.photoUrl;
+    }
+
+    if (profile.pixKey !== undefined) {
+      setConsultantPixKeyState(profile.pixKey);
+      try {
+        localStorage.setItem(STORAGE_KEYS.CONSULTANT_PIX, profile.pixKey);
+      } catch (e) {
+        console.error(e);
+      }
+      payload.consultantPixKey = profile.pixKey;
+    }
+
+    if (profile.receiptNote !== undefined) {
+      setConsultantReceiptNoteState(profile.receiptNote);
+      try {
+        localStorage.setItem(STORAGE_KEYS.CONSULTANT_RECEIPT_NOTE, profile.receiptNote);
+      } catch (e) {
+        console.error(e);
+      }
+      payload.consultantReceiptNote = profile.receiptNote;
+    }
+
+    if (user && Object.keys(payload).length > 0) {
+      setIsSyncing(true);
+      const userDocRef = doc(db, 'users', user.uid, 'appData', 'main');
+      setDoc(userDocRef, {
+        ...payload,
+        lastUpdatedAt: new Date().toISOString(),
+      }, { merge: true })
+        .catch((err) => console.warn('Cloud profile save buffered offline:', err))
+        .finally(() => setIsSyncing(false));
+    }
+  }, [user]);
 
   const setConsultantName = (name: string) => {
-    setConsultantNameState(name);
-    try {
-      localStorage.setItem(STORAGE_KEYS.CONSULTANT_NAME, name);
-    } catch (e) {
-      console.error(e);
-    }
+    updateConsultantProfile({ name });
   };
 
   const setConsultantPhone = (phone: string) => {
-    setConsultantPhoneState(phone);
-    try {
-      localStorage.setItem(STORAGE_KEYS.CONSULTANT_PHONE, phone);
-    } catch (e) {
-      console.error(e);
-    }
+    updateConsultantProfile({ phone });
   };
 
   const setConsultantEmail = (email: string) => {
-    setConsultantEmailState(email);
-    try {
-      localStorage.setItem(STORAGE_KEYS.CONSULTANT_EMAIL, email);
-    } catch (e) {
-      console.error(e);
-    }
+    updateConsultantProfile({ email });
   };
 
   const setConsultantPhotoUrl = (url: string) => {
-    setConsultantPhotoUrlState(url);
-    try {
-      localStorage.setItem(STORAGE_KEYS.CONSULTANT_PHOTO_URL, url);
-    } catch (e) {
-      console.error(e);
-    }
+    updateConsultantProfile({ photoUrl: url });
   };
 
   const setConsultantPixKey = (key: string) => {
-    setConsultantPixKeyState(key);
-    try {
-      localStorage.setItem(STORAGE_KEYS.CONSULTANT_PIX, key);
-    } catch (e) {
-      console.error(e);
-    }
+    updateConsultantProfile({ pixKey: key });
   };
 
   const setConsultantReceiptNote = (note: string) => {
-    setConsultantReceiptNoteState(note);
+    updateConsultantProfile({ receiptNote: note });
+  };
+
+  const setCurrentCycle = (cycle: string) => {
+    setCurrentCycleState(cycle);
     try {
-      localStorage.setItem(STORAGE_KEYS.CONSULTANT_RECEIPT_NOTE, note);
+      localStorage.setItem(STORAGE_KEYS.CURRENT_CYCLE, cycle);
     } catch (e) {
       console.error(e);
     }
+    saveToCloud({ currentCycle: cycle });
   };
 
   // Client actions
@@ -325,16 +544,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: `cli-${Date.now()}`,
       createdAt: new Date().toISOString().split('T')[0],
     };
-    setClients(prev => [newClient, ...prev]);
+    const updated = [newClient, ...clients];
+    setClients(updated);
+    saveToCloud({ clients: updated });
     return newClient;
   };
 
   const updateClient = (id: string, updatedFields: Partial<Client>) => {
-    setClients(prev => prev.map(c => c.id === id ? { ...c, ...updatedFields } : c));
+    const updated = clients.map(c => c.id === id ? { ...c, ...updatedFields } : c);
+    setClients(updated);
+    saveToCloud({ clients: updated });
   };
 
   const deleteClient = (id: string) => {
-    setClients(prev => prev.filter(c => c.id !== id));
+    const updated = clients.filter(c => c.id !== id);
+    setClients(updated);
+    saveToCloud({ clients: updated });
   };
 
   // Product actions
@@ -343,20 +568,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...productData,
       id: `prod-${Date.now()}`,
     };
-    setProducts(prev => [newProd, ...prev]);
+    const updated = [newProd, ...products];
+    setProducts(updated);
+    saveToCloud({ products: updated });
     return newProd;
   };
 
   const updateProduct = (id: string, updatedFields: Partial<Product>) => {
-    setProducts(prev => prev.map(p => p.id === id ? { ...p, ...updatedFields } : p));
+    const updated = products.map(p => p.id === id ? { ...p, ...updatedFields } : p);
+    setProducts(updated);
+    saveToCloud({ products: updated });
   };
 
   const deleteProduct = (id: string) => {
-    setProducts(prev => prev.filter(p => p.id !== id));
+    const updated = products.filter(p => p.id !== id);
+    setProducts(updated);
+    saveToCloud({ products: updated });
   };
 
   const updateProductStock = (id: string, newStock: number) => {
-    setProducts(prev => prev.map(p => p.id === id ? { ...p, stock: Math.max(0, newStock) } : p));
+    const updated = products.map(p => p.id === id ? { ...p, stock: Math.max(0, newStock) } : p);
+    setProducts(updated);
+    saveToCloud({ products: updated });
   };
 
   const importProducts = (newProducts: Omit<Product, 'id'>[]): number => {
@@ -364,93 +597,99 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...p,
       id: `prod-imp-${Date.now()}-${idx}`,
     }));
-    setProducts(prev => [...prodsWithIds, ...prev]);
+    const updated = [...prodsWithIds, ...products];
+    setProducts(updated);
+    saveToCloud({ products: updated });
     return prodsWithIds.length;
   };
 
-  // Sales actions (with stock deduction)
+  // Sales actions (with automatic stock deduction)
   const addSale = (saleData: Omit<Sale, 'id'>): Sale => {
     const newSale: Sale = {
       ...saleData,
       id: `sale-${Date.now()}`,
     };
-    setSales(prev => [newSale, ...prev]);
+    const updatedSales = [newSale, ...sales];
+    setSales(updatedSales);
 
     // Automatically decrement product stock
-    setProducts(prevProducts => {
-      return prevProducts.map(prod => {
-        const itemSold = saleData.items.find(it => it.productId === prod.id);
-        if (itemSold) {
-          return {
-            ...prod,
-            stock: Math.max(0, prod.stock - itemSold.quantity),
-          };
-        }
-        return prod;
-      });
+    const updatedProducts = products.map(prod => {
+      const itemSold = saleData.items.find(it => it.productId === prod.id);
+      if (itemSold) {
+        return {
+          ...prod,
+          stock: Math.max(0, prod.stock - itemSold.quantity),
+        };
+      }
+      return prod;
     });
+    setProducts(updatedProducts);
 
+    saveToCloud({ sales: updatedSales, products: updatedProducts });
     return newSale;
   };
 
   const updateSale = (id: string, updatedFields: Partial<Sale>) => {
-    setSales(prev => prev.map(s => s.id === id ? { ...s, ...updatedFields } : s));
+    const updated = sales.map(s => s.id === id ? { ...s, ...updatedFields } : s);
+    setSales(updated);
+    saveToCloud({ sales: updated });
   };
 
   const deleteSale = (id: string, restoreStock: boolean = true) => {
-    setSales(prevSales => {
-      const saleToDelete = prevSales.find(s => s.id === id);
-      if (saleToDelete && restoreStock && saleToDelete.items && saleToDelete.items.length > 0) {
-        setProducts(prevProducts => {
-          return prevProducts.map(prod => {
-            const itemSold = saleToDelete.items.find(it => it.productId === prod.id);
-            if (itemSold) {
-              return {
-                ...prod,
-                stock: prod.stock + itemSold.quantity,
-              };
-            }
-            return prod;
-          });
-        });
-      }
-      return prevSales.filter(s => s.id !== id);
-    });
+    const saleToDelete = sales.find(s => s.id === id);
+    let updatedProducts = products;
+    if (saleToDelete && restoreStock && saleToDelete.items && saleToDelete.items.length > 0) {
+      updatedProducts = products.map(prod => {
+        const itemSold = saleToDelete.items.find(it => it.productId === prod.id);
+        if (itemSold) {
+          return {
+            ...prod,
+            stock: prod.stock + itemSold.quantity,
+          };
+        }
+        return prod;
+      });
+      setProducts(updatedProducts);
+    }
+    const updatedSales = sales.filter(s => s.id !== id);
+    setSales(updatedSales);
+    saveToCloud({ sales: updatedSales, products: updatedProducts });
   };
 
   const markInstallmentPaid = (saleId: string, installmentId: string, isPaid: boolean) => {
-    setSales(prevSales => {
-      return prevSales.map(sale => {
-        if (sale.id !== saleId) return sale;
+    const updatedSales = sales.map(sale => {
+      if (sale.id !== saleId) return sale;
 
-        const updatedInstallments = sale.installments.map(inst => {
-          if (inst.id === installmentId) {
-            return {
-              ...inst,
-              isPaid,
-              paidAt: isPaid ? new Date().toISOString().split('T')[0] : undefined,
-            };
-          }
-          return inst;
-        });
-
-        const allPaid = updatedInstallments.every(i => i.isPaid);
-        const somePaid = updatedInstallments.some(i => i.isPaid);
-
-        let newStatus = sale.status;
-        if (sale.paymentMethod === 'fiado') {
-          if (allPaid) newStatus = 'pago';
-          else if (somePaid) newStatus = 'parcial';
-          else newStatus = 'pendente';
+      const updatedInstallments = sale.installments.map(inst => {
+        if (inst.id === installmentId) {
+          return {
+            ...inst,
+            isPaid,
+            paidAt: isPaid ? new Date().toISOString().split('T')[0] : undefined,
+          };
         }
-
-        return {
-          ...sale,
-          installments: updatedInstallments,
-          status: newStatus,
-        };
+        return inst;
       });
+
+      const allPaid = updatedInstallments.every(i => i.isPaid);
+      const somePaid = updatedInstallments.some(i => i.isPaid);
+
+      let newStatus = sale.status;
+      if (sale.paymentMethod === 'fiado') {
+        if (allPaid) newStatus = 'pago';
+        else if (somePaid) newStatus = 'parcial';
+        else newStatus = 'pendente';
+      }
+
+      return {
+        ...sale,
+        installments: updatedInstallments,
+        status: newStatus,
+      };
     });
+
+    setSales(updatedSales);
+    saveToCloud({ sales: updatedSales });
   };
 
   // Expenses
@@ -459,12 +698,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...expenseData,
       id: `exp-${Date.now()}`,
     };
-    setExpenses(prev => [newExp, ...prev]);
+    const updated = [newExp, ...expenses];
+    setExpenses(updated);
+    saveToCloud({ expenses: updated });
     return newExp;
   };
 
   const deleteExpense = (id: string) => {
-    setExpenses(prev => prev.filter(e => e.id !== id));
+    const updated = expenses.filter(e => e.id !== id);
+    setExpenses(updated);
+    saveToCloud({ expenses: updated });
   };
 
   // Cycles
@@ -473,11 +716,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...cycleData,
       id: `cycle-${Date.now()}`,
     };
-    setCycles(prev => [newCycle, ...prev]);
+    const updated = [newCycle, ...cycles];
+    setCycles(updated);
+    saveToCloud({ cycles: updated });
   };
 
   const updateCycleTarget = (cycleId: string, newTarget: number) => {
-    setCycles(prev => prev.map(c => c.id === cycleId ? { ...c, salesTarget: newTarget } : c));
+    const updated = cycles.map(c => c.id === cycleId ? { ...c, salesTarget: newTarget } : c);
+    setCycles(updated);
+    saveToCloud({ cycles: updated });
   };
 
   // Backup & storage
@@ -486,6 +733,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       version: '1.0',
       exportedAt: new Date().toISOString(),
       consultantName,
+      consultantPhone,
+      consultantEmail,
+      consultantPhotoUrl,
       consultantPixKey,
       consultantReceiptNote,
       currentCycle,
@@ -508,13 +758,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (data.cycles && Array.isArray(data.cycles)) setCycles(data.cycles);
       if (data.currentCycle) setCurrentCycle(data.currentCycle);
       if (data.consultantName) setConsultantName(data.consultantName);
+      if (data.consultantPhone) setConsultantPhone(data.consultantPhone);
+      if (data.consultantEmail) setConsultantEmail(data.consultantEmail);
+      if (data.consultantPhotoUrl) setConsultantPhotoUrl(data.consultantPhotoUrl);
       if (data.consultantPixKey) setConsultantPixKey(data.consultantPixKey);
       if (data.consultantReceiptNote) setConsultantReceiptNote(data.consultantReceiptNote);
+
+      saveToCloud({
+        clients: data.clients || clients,
+        products: data.products || products,
+        sales: data.sales || sales,
+        expenses: data.expenses || expenses,
+        cycles: data.cycles || cycles,
+        currentCycle: data.currentCycle || currentCycle,
+        consultantName: data.consultantName || consultantName,
+        consultantPhone: data.consultantPhone || consultantPhone,
+        consultantEmail: data.consultantEmail || consultantEmail,
+        consultantPhotoUrl: data.consultantPhotoUrl || consultantPhotoUrl,
+        consultantPixKey: data.consultantPixKey || consultantPixKey,
+        consultantReceiptNote: data.consultantReceiptNote || consultantReceiptNote,
+      });
+
       return true;
     } catch (e) {
       console.error('Import failed', e);
       return false;
     }
+  };
+
+  const syncToCloudNow = async () => {
+    await saveToCloud();
   };
 
   const resetToDefaultData = () => {
@@ -524,6 +797,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setExpenses(INITIAL_EXPENSES);
     setCycles(INITIAL_CYCLES);
     setCurrentCycle('Ciclo 03/2026');
+    saveToCloud({
+      clients: INITIAL_CLIENTS,
+      products: INITIAL_PRODUCTS,
+      sales: INITIAL_SALES,
+      expenses: INITIAL_EXPENSES,
+      cycles: INITIAL_CYCLES,
+      currentCycle: 'Ciclo 03/2026',
+    });
   };
 
   // Computed metrics calculation
@@ -541,7 +822,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   sales.forEach(sale => {
     if (sale.installments && sale.installments.length > 0) {
-      // If sale has installments list
       sale.installments.forEach(inst => {
         if (inst.isPaid) {
           totalFiadoReceived += (inst.amount || 0);
@@ -618,7 +898,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         consultantPixKey,
         consultantReceiptNote,
         activeBrandFilter,
+        isSyncing,
+        isCloudConnected,
         setActiveBrandFilter,
+        updateConsultantProfile,
         setConsultantName,
         setConsultantPhone,
         setConsultantEmail,
@@ -644,6 +927,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateCycleTarget,
         exportDataJSON,
         importDataJSON,
+        syncToCloudNow,
         resetToDefaultData,
         metrics,
       }}
